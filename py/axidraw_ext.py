@@ -17,6 +17,15 @@ STATUS_ERROR = "error"
 
 
 class AxiDrawExt:
+    # Map human-readable paper sizes to AxiDraw API model codes
+    # (see https://axidraw.com/doc/py_api/#model)
+    _MODEL_MAP = {
+        "A1": 5,  # AxiDraw SE/A1
+        "A2": 6,  # AxiDraw SE/A2
+        "A3": 2,  # AxiDraw V3/A3 or SE/A3
+        "A4": 1,  # AxiDraw V2, V3, or SE/A4
+    }
+
     def __init__(self, ownerComp):
         self.ownerComp = ownerComp
         self._comp_path = ownerComp.path  # capture path as plain string at init
@@ -67,11 +76,11 @@ class AxiDrawExt:
             ad = axidraw.AxiDraw()
             ad.interactive()
             ad.options.units = 2
-            ad.options.model = int(self._par("Model", 5))
-            ad.options.speed_pendown = self._par("Speedpendown", 25)
-            ad.options.speed_penup = self._par("Speedpenup", 75)
-            ad.options.pen_pos_down = self._par("Penposdown", 40)
-            ad.options.pen_pos_up = self._par("Penposup", 60)
+            ad.options.model = self._model_code()
+            ad.options.speed_pendown = int(self._par("Speedpendown", 25))
+            ad.options.speed_penup = int(self._par("Speedpenup", 75))
+            ad.options.pen_pos_down = int(self._par("Penposdown", 40))
+            ad.options.pen_pos_up = int(self._par("Penposup", 60))
             port = self._par("Port", "")
             if port:
                 ad.options.port = port
@@ -101,7 +110,7 @@ class AxiDrawExt:
     # ------------------------------------------------------------------
 
     def EngageMotors(self):
-        self._interactive_cmd(lambda ad: ad.penup())
+        self._interactive_cmd(lambda ad: self._apply_pen_options(ad) or ad.penup())
 
     def DisengageMotors(self):
         t = threading.Thread(target=self._disengage_worker, daemon=True)
@@ -119,7 +128,7 @@ class AxiDrawExt:
         try:
             ad = axidraw.AxiDraw()
             ad.plot_setup()
-            ad.options.model = int(self._par("Model", 5))
+            ad.options.model = self._model_code()
             port = self._par("Port", "")
             if port:
                 ad.options.port = port
@@ -131,10 +140,10 @@ class AxiDrawExt:
             self._set_status(STATUS_DISCONNECTED)
 
     def PenUp(self):
-        self._interactive_cmd(lambda ad: ad.penup())
+        self._interactive_cmd(lambda ad: self._apply_pen_options(ad) or ad.penup())
 
     def PenDown(self):
-        self._interactive_cmd(lambda ad: ad.pendown())
+        self._interactive_cmd(lambda ad: self._apply_pen_options(ad) or ad.pendown())
 
     def GoTo(self, x_mm, y_mm):
         self._interactive_cmd(lambda ad: ad.goto(x_mm, y_mm))
@@ -146,7 +155,9 @@ class AxiDrawExt:
         self._interactive_cmd(lambda ad: ad.lineto(x_mm, y_mm))
 
     def Home(self):
-        self._interactive_cmd(lambda ad: (ad.penup(), ad.moveto(0, 0)))
+        self._interactive_cmd(
+            lambda ad: (self._apply_pen_options(ad), ad.penup(), ad.moveto(0, 0))
+        )
 
     # ------------------------------------------------------------------
     # Plotting (interactive mode — streams polylines via draw_path)
@@ -228,6 +239,19 @@ class AxiDrawExt:
         if self._ad is not None:
             self._ad.options.speed_pendown = int(pendown_pct)
             self._ad.options.speed_penup = int(penup_pct)
+            self._ad.update()
+
+    def SetPenPositions(self, pen_down_pct, pen_up_pct):
+        """Update pen-up and pen-down heights on the connected AxiDraw.
+
+        Also writes the values back to the COMP parameters so the UI stays
+        in sync."""
+        self.ownerComp.par.Penposdown = int(pen_down_pct)
+        self.ownerComp.par.Penposup = int(pen_up_pct)
+        if self._ad is not None:
+            self._ad.options.pen_pos_down = int(pen_down_pct)
+            self._ad.options.pen_pos_up = int(pen_up_pct)
+            self._ad.update()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -255,6 +279,7 @@ class AxiDrawExt:
             if self._ad is not None:
                 try:
                     self._ad.plot_status.stopped = 0
+                    self._apply_pen_options(self._ad)
                     self._ad.penup()
                 except Exception:
                     pass
@@ -267,12 +292,12 @@ class AxiDrawExt:
             ad = axidraw.AxiDraw()
             ad.plot_setup(svg_path)
 
-            ad.options.model = int(self._par("Model", 5))
+            ad.options.model = self._model_code()
             ad.options.units = 2
-            ad.options.speed_pendown = self._par("Speedpendown", 25)
-            ad.options.speed_penup = self._par("Speedpenup", 75)
-            ad.options.pen_pos_down = self._par("Penposdown", 40)
-            ad.options.pen_pos_up = self._par("Penposup", 60)
+            ad.options.speed_pendown = int(self._par("Speedpendown", 25))
+            ad.options.speed_penup = int(self._par("Speedpenup", 75))
+            ad.options.pen_pos_down = int(self._par("Penposdown", 40))
+            ad.options.pen_pos_up = int(self._par("Penposup", 60))
             port = self._par("Port", "")
             if port:
                 ad.options.port = port
@@ -302,7 +327,7 @@ class AxiDrawExt:
             try:
                 ad2 = axidraw.AxiDraw()
                 ad2.interactive()
-                ad2.options.model = int(self._par("Model", 5))
+                ad2.options.model = self._model_code()
                 port = self._par("Port", "")
                 if port:
                     ad2.options.port = port
@@ -311,6 +336,12 @@ class AxiDrawExt:
                     ad2.disconnect()
             except Exception:
                 pass
+
+    def _apply_pen_options(self, ad):
+        """Read current pen-position parameters and push them onto the
+        AxiDraw options object so the next penup/pendown uses them."""
+        ad.options.pen_pos_down = int(self._par("Penposdown", 40))
+        ad.options.pen_pos_up = int(self._par("Penposup", 60))
 
     def _interactive_cmd(self, fn):
         if self._ad is None:
@@ -351,6 +382,12 @@ class AxiDrawExt:
             return self.ownerComp.par[name].val
         except Exception:
             return default
+
+    def _model_code(self):
+        """Read the Model parameter ("A1"-"A4") and return the AxiDraw
+        API numeric code.  Defaults to A1 (SE/A1) = 5."""
+        model_str = self._par("Model", "A1")
+        return self._MODEL_MAP.get(model_str, 5)
 
     def Sync(self):
         """Call this from a Timer CHOP Execute or per-frame Execute DAT on the main thread."""
