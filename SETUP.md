@@ -31,12 +31,16 @@ Create a Base COMP. Inside it, create these nodes:
 ### Custom Parameters on the Base COMP
 Add these on a "AxiDraw" page (Extensions → Custom Parameters):
 
-| Name         | Type    | Default | Range   |
-|--------------|---------|---------|---------|
-| Speedpendown | Int     | 25      | 1-100   |
-| Speedpenup   | Int     | 75      | 1-100   |
-| Penposdown   | Int     | 40      | 0-100   |
-| Penposup     | Int     | 60      | 0-100   |
+| Name         | Type    | Default | Range       |
+|--------------|---------|---------|-------------|
+| Port         | Str     | COM4    |             |
+| Model        | StrMenu | A1      | A4,A3,A2,A1 |
+| Paper        | StrMenu | A3      | A4,A3,A2,A1 |
+| Speedpendown | Int     | 25      | 1-100       |
+| Speedpenup   | Int     | 75      | 1-100       |
+| Penposdown   | Int     | 40      | 0-100       |
+| Penposup     | Int     | 60      | 0-100       |
+
 
 ---
 
