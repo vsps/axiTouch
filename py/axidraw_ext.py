@@ -67,23 +67,23 @@ class AxiDrawExt:
 
     def Connect(self):
         debug("spawning connect thread")
-        t = threading.Thread(target=self._connect_worker, daemon=True)
+        opts = self._snapshot_options()
+        t = threading.Thread(target=self._connect_worker, args=(opts,), daemon=True)
         t.start()
         debug("connect thread started, id: " + str(t.ident))
 
-    def _connect_worker(self):
+    def _connect_worker(self, opts):
         try:
             ad = axidraw.AxiDraw()
             ad.interactive()
             ad.options.units = 2
-            ad.options.model = self._model_code()
-            ad.options.speed_pendown = int(self._par("Speedpendown", 25))
-            ad.options.speed_penup = int(self._par("Speedpenup", 75))
-            ad.options.pen_pos_down = int(self._par("Penposdown", 40))
-            ad.options.pen_pos_up = int(self._par("Penposup", 60))
-            port = self._par("Port", "")
-            if port:
-                ad.options.port = port
+            ad.options.model = opts["model"]
+            ad.options.speed_pendown = opts["speed_pendown"]
+            ad.options.speed_penup = opts["speed_penup"]
+            ad.options.pen_pos_down = opts["pen_pos_down"]
+            ad.options.pen_pos_up = opts["pen_pos_up"]
+            if opts["port"]:
+                ad.options.port = opts["port"]
             if not ad.connect():
                 raise RuntimeError("AxiDraw connect() returned False — check USB")
             self._ad = ad
@@ -110,13 +110,15 @@ class AxiDrawExt:
     # ------------------------------------------------------------------
 
     def EngageMotors(self):
-        self._interactive_cmd(lambda ad: self._apply_pen_options(ad) or ad.penup())
+        pen = self._snapshot_pen()
+        self._interactive_cmd(lambda ad: self._apply_pen_options(ad, pen) or ad.penup())
 
     def DisengageMotors(self):
-        t = threading.Thread(target=self._disengage_worker, daemon=True)
+        opts = self._snapshot_options()
+        t = threading.Thread(target=self._disengage_worker, args=(opts,), daemon=True)
         t.start()
 
-    def _disengage_worker(self):
+    def _disengage_worker(self, opts):
         # Close interactive session first
         if self._ad is not None:
             try:
@@ -128,10 +130,9 @@ class AxiDrawExt:
         try:
             ad = axidraw.AxiDraw()
             ad.plot_setup()
-            ad.options.model = self._model_code()
-            port = self._par("Port", "")
-            if port:
-                ad.options.port = port
+            ad.options.model = opts["model"]
+            if opts["port"]:
+                ad.options.port = opts["port"]
             ad.options.mode = "align"
             ad.plot_run()
         except Exception as e:
@@ -140,10 +141,12 @@ class AxiDrawExt:
             self._set_status(STATUS_DISCONNECTED)
 
     def PenUp(self):
-        self._interactive_cmd(lambda ad: self._apply_pen_options(ad) or ad.penup())
+        pen = self._snapshot_pen()
+        self._interactive_cmd(lambda ad: self._apply_pen_options(ad, pen) or ad.penup())
 
     def PenDown(self):
-        self._interactive_cmd(lambda ad: self._apply_pen_options(ad) or ad.pendown())
+        pen = self._snapshot_pen()
+        self._interactive_cmd(lambda ad: self._apply_pen_options(ad, pen) or ad.pendown())
 
     def GoTo(self, x_mm, y_mm):
         self._interactive_cmd(lambda ad: ad.goto(x_mm, y_mm))
@@ -155,8 +158,9 @@ class AxiDrawExt:
         self._interactive_cmd(lambda ad: ad.lineto(x_mm, y_mm))
 
     def Home(self):
+        pen = self._snapshot_pen()
         self._interactive_cmd(
-            lambda ad: (self._apply_pen_options(ad), ad.penup(), ad.moveto(0, 0))
+            lambda ad: (self._apply_pen_options(ad, pen), ad.penup(), ad.moveto(0, 0))
         )
 
     # ------------------------------------------------------------------
@@ -183,8 +187,9 @@ class AxiDrawExt:
             pass
         self._set_status(STATUS_PLOTTING)
 
+        pen = self._snapshot_pen()
         self._plot_thread = threading.Thread(
-            target=self._plot_worker, args=(polylines,), daemon=True
+            target=self._plot_worker, args=(polylines, pen), daemon=True
         )
         self._plot_thread.start()
 
@@ -205,8 +210,9 @@ class AxiDrawExt:
         self._pause_event.set()
         self._set_status(STATUS_PLOTTING)
 
+        opts = self._snapshot_options()
         self._plot_thread = threading.Thread(
-            target=self._plot_svg_worker, args=(svg_path,), daemon=True
+            target=self._plot_svg_worker, args=(svg_path, opts), daemon=True
         )
         self._plot_thread.start()
 
@@ -257,7 +263,7 @@ class AxiDrawExt:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _plot_worker(self, polylines):
+    def _plot_worker(self, polylines, pen):
         try:
             ad = self._ad
             if ad is None:
@@ -279,7 +285,7 @@ class AxiDrawExt:
             if self._ad is not None:
                 try:
                     self._ad.plot_status.stopped = 0
-                    self._apply_pen_options(self._ad)
+                    self._apply_pen_options(self._ad, pen)
                     self._ad.penup()
                 except Exception:
                     pass
@@ -287,20 +293,19 @@ class AxiDrawExt:
                 STATUS_CONNECTED if self._ad is not None else STATUS_DISCONNECTED
             )
 
-    def _plot_svg_worker(self, svg_path):
+    def _plot_svg_worker(self, svg_path, opts):
         try:
             ad = axidraw.AxiDraw()
             ad.plot_setup(svg_path)
 
-            ad.options.model = self._model_code()
+            ad.options.model = opts["model"]
             ad.options.units = 2
-            ad.options.speed_pendown = int(self._par("Speedpendown", 25))
-            ad.options.speed_penup = int(self._par("Speedpenup", 75))
-            ad.options.pen_pos_down = int(self._par("Penposdown", 40))
-            ad.options.pen_pos_up = int(self._par("Penposup", 60))
-            port = self._par("Port", "")
-            if port:
-                ad.options.port = port
+            ad.options.speed_pendown = opts["speed_pendown"]
+            ad.options.speed_penup = opts["speed_penup"]
+            ad.options.pen_pos_down = opts["pen_pos_down"]
+            ad.options.pen_pos_up = opts["pen_pos_up"]
+            if opts["port"]:
+                ad.options.port = opts["port"]
 
             if self._stop_event.is_set():
                 return
@@ -327,21 +332,20 @@ class AxiDrawExt:
             try:
                 ad2 = axidraw.AxiDraw()
                 ad2.interactive()
-                ad2.options.model = self._model_code()
-                port = self._par("Port", "")
-                if port:
-                    ad2.options.port = port
+                ad2.options.model = opts["model"]
+                if opts["port"]:
+                    ad2.options.port = opts["port"]
                 if ad2.connect():
                     ad2.penup()
                     ad2.disconnect()
             except Exception:
                 pass
 
-    def _apply_pen_options(self, ad):
-        """Read current pen-position parameters and push them onto the
-        AxiDraw options object so the next penup/pendown uses them."""
-        ad.options.pen_pos_down = int(self._par("Penposdown", 40))
-        ad.options.pen_pos_up = int(self._par("Penposup", 60))
+    def _apply_pen_options(self, ad, pen):
+        """Push pre-snapshotted pen positions onto the AxiDraw options
+        object so the next penup/pendown uses them."""
+        ad.options.pen_pos_down = pen["pen_pos_down"]
+        ad.options.pen_pos_up = pen["pen_pos_up"]
 
     def _interactive_cmd(self, fn):
         if self._ad is None:
@@ -382,6 +386,22 @@ class AxiDrawExt:
             return self.ownerComp.par[name].val
         except Exception:
             return default
+
+    def _snapshot_pen(self):
+        return {
+            "pen_pos_down": int(self._par("Penposdown", 40)),
+            "pen_pos_up": int(self._par("Penposup", 60)),
+        }
+
+    def _snapshot_options(self):
+        return {
+            "model": self._model_code(),
+            "speed_pendown": int(self._par("Speedpendown", 25)),
+            "speed_penup": int(self._par("Speedpenup", 75)),
+            "pen_pos_down": int(self._par("Penposdown", 40)),
+            "pen_pos_up": int(self._par("Penposup", 60)),
+            "port": self._par("Port", ""),
+        }
 
     def _model_code(self):
         """Read the Model parameter ("A1"-"A4") and return the AxiDraw
