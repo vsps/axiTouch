@@ -2,6 +2,7 @@
 # Drop into a Text DAT named 'axidraw_ext' inside your base COMP.
 # Set the base COMP's extension to this class via the Extensions parameter.
 
+import math
 import threading
 
 from pyaxidraw import axidraw
@@ -37,9 +38,14 @@ class AxiDrawExt:
         self._pause_event = threading.Event()
         self._stop_event = threading.Event()
 
+        self._points_done = 0
+        self._points_total = 0
+
         self._pause_event.set()  # start unpaused
 
+        self._tick_running = False
         self._update_status_dat()
+        self._start_tick()
 
     # ------------------------------------------------------------------
     # Properties
@@ -60,6 +66,18 @@ class AxiDrawExt:
     @property
     def ErrorMessage(self):
         return self._error_msg
+
+    @property
+    def PointsDone(self):
+        return self._points_done
+
+    @property
+    def PointsTotal(self):
+        return self._points_total
+
+    @property
+    def PointsRemaining(self):
+        return max(0, self._points_total - self._points_done)
 
     # ------------------------------------------------------------------
     # Connection
@@ -82,6 +100,7 @@ class AxiDrawExt:
             ad.options.speed_penup = opts["speed_penup"]
             ad.options.pen_pos_down = opts["pen_pos_down"]
             ad.options.pen_pos_up = opts["pen_pos_up"]
+            ad.options.accel = opts["accel"]
             if opts["port"]:
                 ad.options.port = opts["port"]
             if not ad.connect():
@@ -185,6 +204,12 @@ class AxiDrawExt:
             self._ad.plot_status.stopped = 0
         except Exception:
             pass
+
+        rs = self._snapshot_resample()
+        polylines = self._resample_polylines(polylines, rs["min_seg"], rs["max_seg"])
+
+        self._points_total = sum(len(p) for p in polylines if len(p) >= 2)
+        self._points_done = 0
         self._set_status(STATUS_PLOTTING)
 
         pen = self._snapshot_pen()
@@ -245,6 +270,13 @@ class AxiDrawExt:
         if self._ad is not None:
             self._ad.options.speed_pendown = int(pendown_pct)
             self._ad.options.speed_penup = int(penup_pct)
+            self._ad.options.accel = int(self._par("Accel", 75))
+            self._ad.update()
+
+    def SetAccel(self, accel_pct):
+        self.ownerComp.par.Accel = int(accel_pct)
+        if self._ad is not None:
+            self._ad.options.accel = int(accel_pct)
             self._ad.update()
 
     def SetPenPositions(self, pen_down_pct, pen_up_pct):
@@ -275,6 +307,7 @@ class AxiDrawExt:
                 if len(poly) < 2:
                     continue
                 ad.draw_path([[float(p[0]), float(p[1])] for p in poly])
+                self._points_done += len(poly)
         except Exception as e:
             self._error_msg = str(e)
             debug("AxiDrawExt plot error: " + str(e))
@@ -304,6 +337,7 @@ class AxiDrawExt:
             ad.options.speed_penup = opts["speed_penup"]
             ad.options.pen_pos_down = opts["pen_pos_down"]
             ad.options.pen_pos_up = opts["pen_pos_up"]
+            ad.options.accel = opts["accel"]
             if opts["port"]:
                 ad.options.port = opts["port"]
 
@@ -378,6 +412,15 @@ class AxiDrawExt:
                 dat.write("Status:  " + self._status + "\n")
                 dat.write("Error:   " + self._error_msg + "\n")
                 dat.write("Plotting: " + str(self.IsPlotting) + "\n")
+                done = self._points_done
+                total = self._points_total
+                remaining = max(0, total - done)
+                pct = (100.0 * done / total) if total else 0.0
+                dat.write(
+                    "Progress: {0}/{1} points ({2} remaining, {3:.1f}%)\n".format(
+                        done, total, remaining, pct
+                    )
+                )
         except Exception:
             pass
 
@@ -386,6 +429,34 @@ class AxiDrawExt:
             return self.ownerComp.par[name].val
         except Exception:
             return default
+
+    @staticmethod
+    def _resample_polyline(poly, min_seg, max_seg):
+        """Drop sub-min_seg points (collapse to previous), and subdivide any
+        segment longer than max_seg into evenly-spaced points <= max_seg.
+        min_seg <= 0 disables the drop; max_seg <= 0 disables subdivision."""
+        if len(poly) < 2:
+            return poly
+        out = [[float(poly[0][0]), float(poly[0][1])]]
+        for raw in poly[1:]:
+            x, y = float(raw[0]), float(raw[1])
+            px, py = out[-1]
+            dx, dy = x - px, y - py
+            d = math.hypot(dx, dy)
+            if min_seg > 0 and d < min_seg:
+                continue
+            if max_seg > 0 and d > max_seg:
+                n = int(math.ceil(d / max_seg))
+                for i in range(1, n):
+                    t = i / n
+                    out.append([px + dx * t, py + dy * t])
+            out.append([x, y])
+        return out
+
+    def _resample_polylines(self, polylines, min_seg, max_seg):
+        if min_seg <= 0 and max_seg <= 0:
+            return polylines
+        return [self._resample_polyline(p, min_seg, max_seg) for p in polylines]
 
     def _snapshot_pen(self):
         return {
@@ -400,7 +471,14 @@ class AxiDrawExt:
             "speed_penup": int(self._par("Speedpenup", 75)),
             "pen_pos_down": int(self._par("Penposdown", 40)),
             "pen_pos_up": int(self._par("Penposup", 60)),
+            "accel": int(self._par("Accel", 75)),
             "port": self._par("Port", ""),
+        }
+
+    def _snapshot_resample(self):
+        return {
+            "min_seg": float(self._par("Minsegmm", 0.1)),
+            "max_seg": float(self._par("Maxsegmm", 1.5)),
         }
 
     def _model_code(self):
@@ -412,3 +490,15 @@ class AxiDrawExt:
     def Sync(self):
         """Call this from a Timer CHOP Execute or per-frame Execute DAT on the main thread."""
         self._update_status_dat()
+
+    def _start_tick(self):
+        if self._tick_running:
+            return
+        self._tick_running = True
+        self._tick()
+
+    def _tick(self):
+        try:
+            self._update_status_dat()
+        finally:
+            run("args[0]._tick()", self, delayFrames=6)
